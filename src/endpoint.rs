@@ -145,16 +145,26 @@ impl<USB: UsbPeripheral> Endpoint<USB> {
 
             let reg = self.reg();
 
-            match reg.read().stat_tx().bits().into() {
-                EndpointStatus::Valid | EndpointStatus::Disabled => return Err(UsbError::WouldBlock),
-                _ => {}
+            // In isochronous mode we must toggle EPnR.DTOG_RX bit
+            let current_buff = if matches!(self.ep_type, Some(EndpointType::Isochronous{..})) {
+                reg.read().dtog_rx().bit_is_set()
+            } else {
+                match reg.read().stat_tx().bits().into() {
+                    EndpointStatus::Valid | EndpointStatus::Disabled => return Err(UsbError::WouldBlock),
+                    _ => {}
+                }
+                false
             };
 
             in_buf.write(buf);
             self.descr().count_tx().set(buf.len() as u16);
 
+            if matches!(self.ep_type, Some(EndpointType::Isochronous{..})) {
+                reg.modify(|_, w| w.dtog_rx().bit(!current_buff));
+            } 
+            
             self.set_stat_tx(cs, EndpointStatus::Valid);
-
+            
             Ok(buf.len())
         })
     }
@@ -180,7 +190,12 @@ impl<USB: UsbPeripheral> Endpoint<USB> {
 
             out_buf.read(&mut buf[0..count]);
 
-            self.set_stat_rx(cs, EndpointStatus::Valid);
+            if matches!(self.ep_type, Some(EndpointType::Isochronous{..}))  {
+                // We need to toggle EPnR.DTOG_TX bit after read
+                self.reg().modify(|r, w| w.dtog_tx().bit(r.dtog_tx().bit_is_clear()));
+            } else {
+                self.set_stat_rx(cs, EndpointStatus::Valid);
+            }
 
             Ok(count)
         })
